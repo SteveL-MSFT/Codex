@@ -28,11 +28,25 @@ function Enable-Codex {
             $output = @('# No completion found')
         }
 
+        $emptyCompletion = $true
         foreach ($str in $output) {
             $str = $str.Trim()
             if (![string]::IsNullOrEmpty($str)) {
                 [Microsoft.PowerShell.PSConsoleReadLine]::AddLine()
                 [Microsoft.PowerShell.PSConsoleReadLine]::Insert($str)
+                $emptyCompletion = $false
+            }
+        }
+
+        if ($emptyCompletion) {
+            [Microsoft.PowerShell.PSConsoleReadLine]::AddLine()
+            [Microsoft.PowerShell.PSConsoleReadLine]::Insert('# An empty completion was returned')
+        }
+        else {
+            $result = Test-Completion $output
+            if ($null -ne $result) {
+                [Microsoft.PowerShell.PSConsoleReadLine]::AddLine()
+                [Microsoft.PowerShell.PSConsoleReadLine]::Insert($result)
             }
         }
     }
@@ -56,6 +70,27 @@ function Register-CodexOpenApiKey {
 
     Test-OpenApiKey -ApiKey $ApiKey
     Set-Secret -Name CodexOpenApiKey -Secret $ApiKey
+}
+
+function Test-Completion {
+    param (
+        $Lines
+    )
+
+    $tokens = $null
+    $err = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseInput($Lines, [ref]$tokens, [ref]$err)
+    if ($err.Length -gt 0) {
+        return "# This is not a valid PowerShell script"
+    }
+
+    $commands = $ast.FindAll({$true},$true) | Where-Object { $_ -is [System.Management.Automation.Language.CommandAst] } | ForEach-Object { $_.CommandElements[0].Value } | Sort-Object -Unique
+    foreach ($command in $commands) {
+        $c = Get-Command $command -ErrorAction Ignore
+        if ($null -eq $c) {
+            return "# '$command' not found on this system"
+        }
+    }
 }
 
 function Test-OpenApiKey {
