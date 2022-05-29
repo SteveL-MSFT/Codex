@@ -37,3 +37,4 @@ Now at the prompt, you can type a comment and hit `Ctrl+g` and get back a sugges
 # get my ip
 ```
 
+>[Important] The results returned are experimental and should not be executed without first reviewing the script.
