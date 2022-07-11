@@ -1,6 +1,6 @@
 @{
     RootModule = './Codex.psm1'
-    ModuleVersion = '0.1.0'
+    ModuleVersion = '0.1.1'
     GUID = '8d5418e8-acdf-4e6c-ba31-bad2a5ebff38'
     Author = 'Steve Lee'
     CompanyName = 'Microsoft'

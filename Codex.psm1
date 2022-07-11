@@ -188,7 +188,12 @@ function Get-CodexCompletion {
     Write-Progress -Activity "Codex" -Completed
 
     $response = $completion.Choices.Text
-    $contextList.Add($response.Trim().Replace("`n", "\n"))
 
-    return $response
+    if ($null -ne $response) {
+        $contextList.Add($response.Trim().Replace("`n", "\n"))
+        return $response
+    }
+    else {
+        Write-Warning "Did not receive response from OpenAI"
+    }
 }
