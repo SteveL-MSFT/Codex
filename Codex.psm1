@@ -22,31 +22,51 @@ function Enable-Codex {
 
         [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$line, [ref]$cursor)
 
-        $output = Get-CodexCompletion -Line $line
+        $moderation = Get-ModerationClassification -Line $line
 
-        if ($null -eq $output) {
-            $output = @('# No completion found')
-        }
-
-        $emptyCompletion = $true
-        foreach ($str in $output) {
-            $str = $str.Trim()
-            if (![string]::IsNullOrEmpty($str)) {
-                [Microsoft.PowerShell.PSConsoleReadLine]::AddLine()
-                [Microsoft.PowerShell.PSConsoleReadLine]::Insert($str)
-                $emptyCompletion = $false
+        if($moderation.results.flagged -eq $true){
+            $moderationModel = $moderation.model
+            $categories = $moderation.results.categories | Get-Member -MemberType NoteProperty | Select-Object -Property Name
+            $violatedCategories = $null
+            $categories | ForEach-Object{
+                $categoryName = $_.Name
+                if($null -eq $violatedCategories -and $moderation.results.categories.$($categoryName) -eq $true){
+                    $violatedCategories = $categoryName
+                }elseif($moderation.results.categories.$($categoryName) -eq $true){
+                    $violatedCategories = $violatedCategories + ", " + $categoryName
+                }
             }
-        }
+            Write-Warning "The model, $($moderationModel), has classified the content as having violated OpenAI's content policy in the following categories: $($categories)"
+        }elseif($null -eq $moderation){
+            Write-Warning "Content could not be validated on a moderation model."
+        }else{
 
-        if ($emptyCompletion) {
-            [Microsoft.PowerShell.PSConsoleReadLine]::AddLine()
-            [Microsoft.PowerShell.PSConsoleReadLine]::Insert('# An empty completion was returned')
-        }
-        else {
-            $result = Test-Completion $output
-            if ($null -ne $result) {
+            $output = Get-CodexCompletion -Line $line
+
+            if ($null -eq $output) {
+                $output = @('# No completion found')
+            }
+
+            $emptyCompletion = $true
+            foreach ($str in $output) {
+                $str = $str.Trim()
+                if (![string]::IsNullOrEmpty($str)) {
+                    [Microsoft.PowerShell.PSConsoleReadLine]::AddLine()
+                    [Microsoft.PowerShell.PSConsoleReadLine]::Insert($str)
+                    $emptyCompletion = $false
+                }
+            }
+
+            if ($emptyCompletion) {
                 [Microsoft.PowerShell.PSConsoleReadLine]::AddLine()
-                [Microsoft.PowerShell.PSConsoleReadLine]::Insert($result)
+                [Microsoft.PowerShell.PSConsoleReadLine]::Insert('# An empty completion was returned')
+            }
+            else {
+                $result = Test-Completion $output
+                if ($null -ne $result) {
+                    [Microsoft.PowerShell.PSConsoleReadLine]::AddLine()
+                    [Microsoft.PowerShell.PSConsoleReadLine]::Insert($result)
+                }
             }
         }
     }
@@ -101,7 +121,7 @@ function Test-OpenApiKey {
 
     try {
         Write-Progress -Activity "OpenAI Key" -Status "Validating..."
-        $null = Invoke-RestMethod -Uri 'https://api.openai.com/v1/engines' -Authentication Bearer -Token $ApiKey
+        $null = Invoke-RestMethod -Uri "https://api.openai.com/v1/models/$($engine)" -Authentication Bearer -Token $ApiKey
         Write-Progress -Activity "OpenAI Key" -Completed
     }
     catch {
@@ -159,26 +179,12 @@ function Get-CodexCompletion {
     if ($null -eq $ApiKey) {
         throw "OpenAI API key not found. Please use Register-CodexOpenApiKey to register your OpenAI API key"
     }
-
-    $contextList.Add("\n" + $Line.Replace('"', '\"'))
-
-    $trimList = $false
-    do {
-        if ($trimList) {
-            $contextList.RemoveAt(0)
-        }
-
-        $context = [string]::Join("\n", $contextList.ToArray()).Replace('"', '\"')
-        [int]$tokenCount = $context.Split(' ', [System.StringSplitOptions]::RemoveEmptyEntries).count + $contextList.Count - 1
-        $trimList = $true
-    }
-    while ($tokenCount -gt 4096)
  
-    $body = "{`"prompt`": `"<# powershell #>\n\n$context`", `"temperature`": 0, `"max_tokens`": 300, `"stop`":`"#`"}"
+    $body = @{ model="$($engine)"; prompt="# powershell\n$($Line)"; temperature=0; max_tokens=300; top_p=1; frequency_penalty=0; presence_penalty=0; stop="#"} | ConvertTo-Json
 
     Write-Progress -Activity "Codex" -Status "Getting completion..."
     try {
-        $completion = Invoke-RestMethod -Uri "https://api.openai.com/v1/engines/$engine/completions" -ContentType 'application/json' -Authentication Bearer -Token $ApiKey -Body $body -Method Post
+        $completion = Invoke-RestMethod -Uri "https://api.openai.com/v1/completions" -ContentType 'application/json' -Authentication Bearer -Token $ApiKey -Body $body -Method Post
     }
     catch {
         Write-Error $_
@@ -190,10 +196,42 @@ function Get-CodexCompletion {
     $response = $completion.Choices.Text
 
     if ($null -ne $response) {
-        $contextList.Add($response.Trim().Replace("`n", "\n"))
-        return $response
+        $contextList.Add($response.Trim().Replace("\n", ""))
+        return $response.Trim().Replace("\n", "")
     }
     else {
         Write-Warning "Did not receive response from OpenAI"
+    }
+}
+
+function Get-ModerationClassification {
+    param (
+        [ValidateNotNullOrEmpty()]
+        [string]$Line
+    )
+
+    $ApiKey = Get-Secret -Name $secretName -ErrorAction Ignore
+    if($null -eq $ApiKey){
+        throw "OpenAI API key not found. Please use Register-CodexOpenApiKey to register your OpenAI API key"
+    }
+
+    $body = @{input="$($line)"} | ConvertTo-Json -Compress
+
+    Write-Progress -Activity "Codex Moderations" -Status "Getting moderation results..."
+    try {
+        $moderation = Invoke-RestMethod -Uri "https://api.openai.com/v1/moderations" -ContentType 'application/json' -Authentication Bearer -Token $ApiKey -Body $body -Method Post
+    }
+    catch {
+        Write-Error $_
+        Write-Verbose -Verbose $body
+    }
+
+    Write-Progress -Activity "Codex Moderation" -Completed
+    
+    if ($null -ne $moderation) {
+        return $moderation
+    }
+    else {
+        Write-Warning "Did not receive response from OpenAI when getting moderation classification."
     }
 }
